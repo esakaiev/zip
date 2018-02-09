@@ -1,0 +1,65 @@
+---
+- hosts: localhost
+  tags:
+    - classic
+
+  vars:
+    - artifacts: "{{ lookup('env', 'TEST_ARTIFACTS')|default('./artifacts', true) }}"
+
+  tasks:
+    - name: Define remote_artifacts if it is not already defined
+      set_fact:
+        remote_artifacts: /home/${USER}/artifacts
+      when: remote_artifacts is not defined
+
+    - name: Copy tests to target
+      synchronize:
+        src: "{{ playbook_dir }}/"
+        dest: /home/${USER}/bin/
+        ssh_args: "-o UserKnownHostsFile=/dev/null"
+
+    - name: Make artifacts directory
+      file: path={{ remote_artifacts }} state=directory recurse=yes
+
+    - block:
+      - name: Execute tests
+        shell: |
+          logfile={{ remote_artifacts }}/test.{{ item }}.log
+          exec 2>>$logfile 1>>$logfile
+          cd tests
+          #make script executable
+          chmod 0775 {{ item }}
+          #execute the test
+          python2 {{ item }}.py
+          if [ $? -eq 0 ]; then
+              echo "PASS {{ item }}" >> {{ remote_artifacts }}/test.log
+          else
+              echo "FAIL {{ item }}" >> {{ remote_artifacts }}/test.log
+          fi
+        with_items:
+        - "test_4GBsegfault"
+        - "test_big_file_in_archive"
+        - "test_long_path_in_archive"
+        - "test_many_files_in_archive"
+        - "test_umask"
+        - "test_umask_when_creating"
+        - "test_zipnote_fails_to_update_the_archive"
+
+
+      - name: Pull out the logs
+        synchronize:
+          dest: "{{ artifacts }}/"
+          src: "{{ remote_artifacts }}/"
+          mode: pull
+          ssh_args: "-o UserKnownHostsFile=/dev/null"
+        when: artifacts|default("") != ""
+
+      # Can't go in block. See
+      # https://github.com/ansible/ansible/issues/20736
+      - name: Check the results
+        shell: grep "^FAIL" {{ remote_artifacts }}/test.log
+        register: test_fails
+        failed_when: test_fails.stdout or test_fails.stderr
+
+
+
